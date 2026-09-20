@@ -24,7 +24,30 @@ Then open <http://localhost:8080> (set another port with `PORT=3000 node server.
 Data is saved to `data.json` (kept out of git, because it contains account keys).
 If an old `messages.json` exists, its messages are imported into General on the first run.
 
+## Staying online (recommended)
+
+Run it as a service so it restarts itself after crashes and reboots:
+
+```
+sudo cp commons.service /etc/systemd/system/   # edit WorkingDirectory first
+sudo systemctl enable --now commons
+```
+
+Optional: restart it automatically if it ever freezes (checks `/api/health` every minute):
+
+```
+chmod +x healthcheck.sh
+(crontab -l 2>/dev/null; echo "* * * * * $PWD/healthcheck.sh") | crontab -
+```
+
+The browser side also copes with dropped connections: it reconnects on its own, catches up on
+missed messages, and keeps unsent messages queued until the connection is back.
+
 ## Update on the server
+
+With the service: `git pull && sudo systemctl restart commons`
+
+Without it:
 
 ```
 pkill -f "node server.js"

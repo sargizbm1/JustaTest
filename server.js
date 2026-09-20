@@ -43,6 +43,9 @@ function saveNow() {
   fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify(db));
   fs.renameSync(DATA_FILE + '.tmp', DATA_FILE);
 }
+// Never let one bad request or dead socket take the whole server down.
+process.on('uncaughtException', e => console.error(new Date().toISOString(), 'uncaught:', e));
+process.on('unhandledRejection', e => console.error(new Date().toISOString(), 'unhandled:', e));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { saveNow(); } catch {} process.exit(0); });
 
 // ---------- helpers ----------
@@ -80,9 +83,14 @@ function lastByRoom(rooms) {
 }
 function push(ids, event) {
   const line = `data: ${JSON.stringify(event)}\n\n`;
-  for (const id of new Set(ids)) for (const res of clients.get(id) || []) res.write(line);
+  for (const id of new Set(ids)) for (const res of clients.get(id) || []) {
+    try { res.write(line); } catch { res.destroy(); }
+  }
 }
-setInterval(() => { for (const set of clients.values()) for (const res of set) res.write(':\n\n'); }, 25000);
+// Heartbeat: the browser treats silence as a dead connection and reconnects.
+setInterval(() => push([...clients.keys()], { type: 'ping' }), 15000);
+const seen = new Map(); // "userId:cid" -> message, so a retried send is never posted twice
+setInterval(() => { for (const [k, m] of seen) if (m.ts < Date.now() - 6e5) seen.delete(k); }, 60000);
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -100,6 +108,7 @@ const json = (res, code, obj) => {
 // ---------- API ----------
 async function api(req, res, url) {
   const p = url.pathname, get = req.method === 'GET', post = req.method === 'POST';
+  if (p === '/api/health') return json(res, 200, { ok: true, uptime: Math.round(process.uptime()) });
 
   if (p === '/api/register' && post) {
     const b = await readBody(req);
@@ -119,7 +128,8 @@ async function api(req, res, url) {
     const first = set.size === 0;
     set.add(res);
     if (first) push(me.contacts, { type: 'presence', id: me.id, online: true });
-    req.on('close', () => {
+    res.on('error', () => {});
+    res.on('close', () => {
       set.delete(res);
       if (!set.size) push(me.contacts, { type: 'presence', id: me.id, online: false });
     });
@@ -165,6 +175,8 @@ async function api(req, res, url) {
     const text = String(b.text ?? '').trim().slice(0, 500);
     if (!text) return json(res, 400, { error: 'Write something first.' });
     if (!canAccess(me, b.room)) return json(res, 403, { error: 'You do not have access to that chat.' });
+    const cid = clean(b.cid, 40), dupKey = me.id + ':' + cid;
+    if (cid && seen.has(dupKey)) return json(res, 200, { message: seen.get(dupKey) });
     const now = Date.now();
     if (now - (lastSend.get(me.id) || 0) < 250) return json(res, 429, { error: 'Slow down a little.' });
     lastSend.set(me.id, now);
@@ -173,6 +185,7 @@ async function api(req, res, url) {
     if (db.messages.length > 20000) db.messages.splice(0, 2000);
     save();
     const message = pubMsg(m);
+    if (cid) seen.set(dupKey, message);
     push(m.room === 'general' ? [...clients.keys()] : roomMembers(m.room), { type: 'message', message });
     return json(res, 200, { message });
   }
@@ -181,7 +194,7 @@ async function api(req, res, url) {
 }
 
 // ---------- server ----------
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
@@ -195,4 +208,9 @@ http.createServer(async (req, res) => {
   } catch {
     if (!res.headersSent) json(res, 400, { error: 'Bad request' }); else res.end();
   }
-}).listen(PORT, () => console.log(`Commons running on http://localhost:${PORT}`));
+});
+server.keepAliveTimeout = 65000; // longer than most proxies, avoids random resets
+server.headersTimeout = 66000;
+server.on('clientError', (e, socket) => socket.destroy());
+server.on('error', e => { console.error('server error:', e.message); if (e.code === 'EADDRINUSE') process.exit(1); });
+server.listen(PORT, () => console.log(`Commons running on http://localhost:${PORT}`));

@@ -6,6 +6,10 @@ const HUES = [250, 330, 160, 30, 200, 285];
 const state = { me: null, contacts: [], last: {}, unread: {}, msgs: {}, room: 'general', es: null, filter: '' };
 let token = localStorage.getItem(TOKEN_KEY);
 const reads = JSON.parse(localStorage.getItem(READ_KEY) || '{}');
+const OUT_KEY = 'commons.outbox';
+let outbox = [];                         // messages waiting to be delivered
+try { outbox = JSON.parse(localStorage.getItem(OUT_KEY) || '[]'); } catch {}
+const saveOutbox = () => localStorage.setItem(OUT_KEY, JSON.stringify(outbox));
 
 // ---------- small helpers ----------
 function h(tag, cls, text) {
@@ -46,11 +50,15 @@ async function copy(text) {
 }
 
 async function api(path, body) {
-  const r = await fetch('/api' + path, {
-    method: body ? 'POST' : 'GET',
-    headers: { 'Content-Type': 'application/json', 'x-token': token || '' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let r;
+  try {
+    r = await fetch('/api' + path, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', 'x-token': token || '' },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined,
+    });
+  } catch { throw new Error('No connection. Trying again\u2026'); }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(data.error || 'Something went wrong. Try again.'), { status: r.status });
   return data;
@@ -131,7 +139,8 @@ function renderMessages(stick) {
   const list = state.msgs[state.room];
   box.replaceChildren();
   if (!list) return void box.append(h('p', 'empty', 'Loading messages\u2026'));
-  if (!list.length) return void box.append(h('p', 'empty', state.room === 'general' ? 'No messages yet. Say hello to everyone here.' : 'No messages yet. Say hi and start the conversation.'));
+  const pending = outbox.filter(x => x.room === state.room);
+  if (!list.length && !pending.length) return void box.append(h('p', 'empty', state.room === 'general' ? 'No messages yet. Say hello to everyone here.' : 'No messages yet. Say hi and start the conversation.'));
   list.forEach((m, i) => {
     const prev = list[i - 1], next = list[i + 1];
     const newDay = !prev || !sameDay(prev.ts, m.ts);
@@ -147,6 +156,11 @@ function renderMessages(stick) {
     if (last) wrap.append(h('span', 'stamp', clock(m.ts)));
     box.append(wrap);
   });
+  for (const it of pending) {
+    const w = h('div', 'msg mine pending first');
+    w.append(h('div', 'bubble', it.text), h('span', 'stamp', 'Sending\u2026'));
+    box.append(w);
+  }
   if (stick || near) box.scrollTop = box.scrollHeight;
 }
 
@@ -180,9 +194,29 @@ $('#composer').addEventListener('submit', async e => {
   const input = $('#text'), text = input.value.trim();
   if (!text) return;
   input.value = '';
-  try { addMsg((await api('/messages', { room: state.room, text })).message); }
-  catch (err) { input.value = text; toast(err.message); }
+  outbox.push({ cid: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), room: state.room, text });
+  saveOutbox(); renderMessages(true); flushOutbox();
 });
+
+// Sends queued messages in order. If the connection is down they stay queued and retry.
+let flushing = false;
+async function flushOutbox() {
+  if (flushing) return;
+  flushing = true;
+  while (outbox.length) {
+    const it = outbox[0];
+    try {
+      const { message } = await api('/messages', { room: it.room, text: it.text, cid: it.cid });
+      outbox.shift(); saveOutbox(); addMsg(message);
+    } catch (err) {
+      if (err.status && err.status < 500 && err.status !== 429) { outbox.shift(); saveOutbox(); toast(err.message); continue; }
+      break;
+    }
+  }
+  flushing = false;
+  renderMessages();
+  if (outbox.length) setTimeout(flushOutbox, 3000);
+}
 $('#search').addEventListener('input', e => { state.filter = e.target.value; renderList(); });
 $('#back').onclick = () => $('#shell').classList.remove('in-chat');
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.me) { markRead(state.room); renderList(); } });
@@ -192,20 +226,27 @@ function setLive(on) {
   $('#status').dataset.on = on;
   $('#status-text').textContent = on ? 'Live' : 'Reconnecting\u2026';
 }
+let lastBeat = Date.now(), retryTimer, retryDelay = 1000, dropped = false;
 function connect() {
+  clearTimeout(retryTimer);
   if (state.es) state.es.close();
-  let dropped = false;
+  lastBeat = Date.now();
   const es = new EventSource('/api/events?token=' + encodeURIComponent(token));
-  es.onopen = async () => {
-    setLive(true);
-    if (!dropped) return;
-    dropped = false;                      // catch up on anything missed while offline
-    state.msgs = {};
-    await loadMe(); renderMe(); await selectRoom(state.room, false);
+  es.onopen = () => {
+    lastBeat = Date.now(); retryDelay = 1000; setLive(true);
+    if (dropped) { dropped = false; resync(); }
   };
-  es.onerror = () => { dropped = true; setLive(false); };
+  es.onerror = () => {
+    dropped = true; setLive(false);
+    if (es.readyState === EventSource.CLOSED) {   // browser gave up (proxy error etc.), so retry ourselves
+      retryTimer = setTimeout(connect, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 15000);
+    }
+  };
   es.onmessage = async e => {
+    lastBeat = Date.now();
     const ev = JSON.parse(e.data);
+    if (ev.type === 'ping') return;
     if (ev.type === 'message') addMsg(ev.message);
     else if (ev.type === 'presence') {
       const c = state.contacts.find(x => x.id === ev.id);
@@ -216,6 +257,35 @@ function connect() {
   };
   state.es = es;
 }
+// Catch up on anything missed while offline.
+async function resync() {
+  try {
+    state.msgs = {};
+    await loadMe(); renderMe(); await selectRoom(state.room, false);
+    flushOutbox();
+  } catch { dropped = true; }
+}
+function reconnectNow() { if (state.me) { dropped = true; setLive(false); connect(); } }
+// A connection can die silently (sleeping phone, NAT timeout). No heartbeat for 40s means reconnect.
+setInterval(() => { if (state.me && Date.now() - lastBeat > 40000) reconnectNow(); }, 5000);
+addEventListener('online', reconnectNow);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastBeat > 20000) reconnectNow(); });
+
+// ---------- theme (light or dark) ----------
+function showTheme() {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  const label = dark ? 'Switch to light theme' : 'Switch to dark theme';
+  const btn = $('#theme-btn');
+  btn.setAttribute('aria-label', label); btn.title = label;
+  $('#theme-meta').content = dark ? '#000000' : '#ffffff';
+}
+$('#theme-btn').onclick = () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('commons.theme', next);
+  showTheme();
+};
+showTheme();
 
 // ---------- dialogs ----------
 document.addEventListener('click', e => { const b = e.target.closest('[data-close]'); if (b) b.closest('dialog').close(); });
@@ -283,7 +353,7 @@ $('#key-form').onsubmit = async e => {
 // ---------- start ----------
 async function start() {
   if (!state.me) await loadMe();
-  renderMe(); connect(); await selectRoom('general', false);
+  renderMe(); connect(); await selectRoom('general', false); flushOutbox();
 }
 (async () => {
   if (token) {
