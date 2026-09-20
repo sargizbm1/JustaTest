@@ -42,10 +42,10 @@ function avatar(u, cls = '', online = false) {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 2200) {
   const t = $('#toast');
   t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 async function copy(text) {
   try { await navigator.clipboard.writeText(text); }
@@ -358,14 +358,18 @@ document.querySelectorAll('[data-tab]').forEach(b => { b.onclick = () => setTab(
 $('#profile-form').addEventListener('invalid', () => setTab('profile'), true);
 
 function openSettings() {
+  try { fillSettings(); } catch (e) { console.error(e); return toast('Could not open settings: ' + e.message, 6000); }
+  if (!$('#profile-dialog').open) $('#profile-dialog').showModal();
+}
+function fillSettings() {
   const me = state.me;
+  if (!me.vis) throw new Error('the server is out of date. Restart it (node server.js) and refresh this page');
   $('#pf-name').value = me.name; $('#pf-status').value = me.status || ''; $('#pf-bio').value = me.bio || '';
   $('#pf-gender').value = me.gender || ''; $('#pf-age').value = me.age ?? '';
   $('#profile-key').value = me.token;
   for (const [k] of VIS) visBox(k).checked = !!me.vis[k];
   pickedColor = me.color;
   paintSwatches(); paintMedia(); setTab('profile');
-  if (!$('#profile-dialog').open) $('#profile-dialog').showModal();
 }
 $('#me-btn').onclick = openSettings;
 $('#settings-btn').onclick = openSettings;
