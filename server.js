@@ -130,6 +130,9 @@ function readRaw(req, limit) {
     req.on('error', reject);
   });
 }
+function assetVersion(f) {
+  try { return crypto.createHash('md5').update(fs.readFileSync(path.join(__dirname, f))).digest('hex').slice(0, 8); } catch { return '0'; }
+}
 const json = (res, code, obj) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(obj));
@@ -271,7 +274,9 @@ const server = http.createServer(async (req, res) => {
     if (!file || req.method !== 'GET') { res.writeHead(404); return res.end('Not found'); }
     fs.readFile(path.join(__dirname, file), (err, buf) => {
       if (err) { res.writeHead(500); return res.end('Error'); }
-      res.writeHead(200, { 'Content-Type': MIME[file.split('.').pop()], 'Cache-Control': 'no-cache' });
+      // Stamp script.js / style.css with a content hash so no browser or proxy can serve an outdated copy.
+      if (file === 'index.html') buf = Buffer.from(buf.toString().replace(/(src|href)="(script\.js|style\.css)"/g, (m, a, f) => `${a}="${f}?v=${assetVersion(f)}"`));
+      res.writeHead(200, { 'Content-Type': MIME[file.split('.').pop()], 'Cache-Control': 'no-store' });
       res.end(buf);
     });
   } catch (e) {

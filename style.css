@@ -19,7 +19,7 @@
 * { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
 body { font: 15px/1.45 var(--body); color: var(--text); background: var(--bg); overflow: hidden; }
-button, input { font: inherit; color: inherit; }
+button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; border: 0; background: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

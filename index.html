@@ -12,6 +12,20 @@
   } catch (e) {}
 </script>
 <title>Commons</title>
+<script>
+  // If anything in the app breaks, say so on screen instead of failing silently.
+  function showBootError(msg) {
+    var b = document.getElementById('boot-error');
+    if (!b) {
+      b = document.createElement('div'); b.id = 'boot-error';
+      b.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99;padding:10px 14px;background:#d33a4c;color:#fff;font:14px system-ui,sans-serif';
+      (document.body || document.documentElement).appendChild(b);
+    }
+    b.textContent = 'Something went wrong: ' + msg;
+  }
+  window.addEventListener('error', function (e) { showBootError(e.message + (e.filename ? ' (' + e.filename.split('/').pop().split('?')[0] + ' line ' + e.lineno + ')' : '')); });
+  window.addEventListener('unhandledrejection', function (e) { showBootError(String((e.reason && e.reason.message) || e.reason)); });
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
