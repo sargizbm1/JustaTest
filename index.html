@@ -31,6 +31,9 @@
         <svg class="i-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
         <svg class="i-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
       </button>
+      <button type="button" class="icon-btn" id="settings-btn" aria-label="Profile and settings" title="Profile and settings">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h0a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
       <button type="button" class="icon-btn" id="add-btn" aria-label="Add contact" title="Add contact">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6"/><path d="M19 8v6M16 11h6"/></svg>
       </button>
@@ -47,7 +50,7 @@
 
     <button type="button" class="me" id="me-btn">
       <span id="me-avatar"></span>
-      <span class="me-text"><b id="me-name"></b><small>Edit profile</small></span>
+      <span class="me-text"><b id="me-name"></b><small>Profile &amp; settings</small></span>
     </button>
 
     <input class="field search" id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off">
@@ -103,25 +106,73 @@
   </form>
 </dialog>
 
-<dialog id="profile-dialog">
+<dialog id="profile-dialog" class="wide">
+  <div class="dlg-head">
+    <h2>Profile &amp; settings</h2>
+    <button type="button" class="icon-btn" data-close aria-label="Close">&times;</button>
+  </div>
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" data-tab="profile" aria-selected="true">Profile</button>
+    <button type="button" role="tab" data-tab="privacy" aria-selected="false">Visibility</button>
+    <button type="button" role="tab" data-tab="account" aria-selected="false">Account</button>
+  </div>
   <form id="profile-form">
-    <h2>Your profile</h2>
-    <input class="field" id="profile-name" maxlength="24" aria-label="Your name" required>
-    <div class="swatches" id="swatches" role="group" aria-label="Avatar color"></div>
-    <div class="keybox">
-      <label for="profile-key">Account key</label>
-      <div class="inline">
-        <input class="field" id="profile-key" type="password" readonly>
-        <button class="btn ghost" type="button" id="copy-key">Copy</button>
+    <section data-panel="profile">
+      <div class="cover" id="pf-banner">
+        <div class="media-actions cover-actions">
+          <button class="btn small" type="button" id="banner-change">Change banner</button>
+          <button class="btn small" type="button" id="banner-remove">Remove</button>
+        </div>
       </div>
-      <p class="hint">Use this key to sign in on another device. Anyone who has it can sign in as you, so keep it private.</p>
-    </div>
-    <div class="inline end">
+      <div class="photo-row">
+        <span id="pf-photo"></span>
+        <div class="media-actions">
+          <button class="btn ghost small" type="button" id="photo-change">Change photo</button>
+          <button class="btn ghost small" type="button" id="photo-remove">Remove photo</button>
+        </div>
+      </div>
+      <label class="lbl">Name <input class="field" id="pf-name" maxlength="24" required></label>
+      <label class="lbl">Status <input class="field" id="pf-status" maxlength="60" placeholder="What are you up to?"></label>
+      <label class="lbl">Bio <textarea class="field" id="pf-bio" maxlength="160" rows="3" placeholder="Tell people a little about you"></textarea></label>
+      <div class="two">
+        <label class="lbl">Gender
+          <select class="field" id="pf-gender">
+            <option value="">Prefer not to say</option>
+            <option>Male</option><option>Female</option><option>Non-binary</option><option>Other</option>
+          </select>
+        </label>
+        <label class="lbl">Age <input class="field" id="pf-age" type="number" min="13" max="120" inputmode="numeric" placeholder="13+"></label>
+      </div>
+      <div class="lbl">Avatar color <div class="swatches" id="swatches" role="group" aria-label="Avatar color"></div></div>
+    </section>
+
+    <section data-panel="privacy" hidden>
+      <p class="hint">Choose what other people can see on your profile. Turn a section off and it is hidden from everyone else. You always see your own. Your name and ID are always visible so friends can find you.</p>
+      <div id="vis-list"></div>
+    </section>
+
+    <section data-panel="account" hidden>
+      <div class="keybox">
+        <label for="profile-key">Account key</label>
+        <div class="inline">
+          <input class="field" id="profile-key" type="password" readonly>
+          <button class="btn ghost" type="button" id="copy-key">Copy</button>
+        </div>
+        <p class="hint">Use this key to sign in on another device. Anyone who has it can sign in as you, so keep it private.</p>
+      </div>
       <button class="btn ghost danger" type="button" id="signout">Sign out</button>
+    </section>
+
+    <div class="inline end">
+      <button class="btn ghost" type="button" data-close>Cancel</button>
       <button class="btn" type="submit">Save changes</button>
     </div>
   </form>
+  <input type="file" id="file-photo" accept="image/*" hidden>
+  <input type="file" id="file-banner" accept="image/*" hidden>
 </dialog>
+
+<dialog id="card-dialog" class="card-dlg"><div id="card"></div></dialog>
 
 <div class="toast" id="toast" role="status"></div>
 <script src="script.js"></script>

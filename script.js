@@ -32,7 +32,11 @@ const hsl = (hue, l = 50) => `hsl(${hue} 68% ${l}%)`;
 function avatar(u, cls = '', online = false) {
   const el = h('span', 'avatar ' + cls);
   if (u === 'room') { el.classList.add('room'); el.textContent = '#'; }
-  else { el.textContent = [...(u.name || '?')][0].toUpperCase(); el.style.background = hsl(u.color, 46); }
+  else {
+    el.style.backgroundColor = hsl(u.color, 46);
+    if (u.photo) { el.classList.add('has-photo'); el.style.backgroundImage = `url("${u.photo}")`; }
+    else el.textContent = [...(u.name || '?')][0].toUpperCase();
+  }
   if (online) el.append(h('i', 'dot'));
   return el;
 }
@@ -129,8 +133,12 @@ function renderHead() {
   const who = $('#head-who'), t = h('div');
   who.replaceChildren(avatar(r.general ? 'room' : r.user, 'sm', !r.general && r.user.online));
   t.append(h('b', '', r.name));
-  t.append(r.general ? h('small', '', 'Everyone on this server') : h('small', r.user.online ? 'on' : '', (r.user.online ? 'Online' : 'Offline') + ' \u00b7 ID ' + r.user.id));
+  t.append(r.general ? h('small', '', 'Everyone on this server') : h('small', r.user.online ? 'on' : '', (r.user.online ? 'Online' : 'Offline') + (r.user.status ? ' \u00b7 ' + r.user.status : '')));
   who.append(t);
+  who.classList.toggle('clickable', !r.general);          // tap the name to see their profile
+  who.onclick = r.general ? null : () => showCard(r.user.id);
+  if (r.general) { who.removeAttribute('role'); who.removeAttribute('tabindex'); }
+  else { who.setAttribute('role', 'button'); who.tabIndex = 0; }
 }
 
 function renderMessages(stick) {
@@ -150,7 +158,9 @@ function renderMessages(stick) {
     const mine = m.from === state.me.id;
     const wrap = h('div', `msg ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}`);
     if (first && !mine && state.room === 'general') {
-      const w = h('span', 'who-name', m.name); w.style.color = hsl(m.color, 46); wrap.append(w);
+      const w = h('button', 'who-name', m.name); w.type = 'button'; w.style.color = hsl(m.color, 46);
+      if (m.from) w.onclick = () => showCard(m.from);
+      wrap.append(w);
     }
     wrap.append(h('div', 'bubble', m.text));
     if (last) wrap.append(h('span', 'stamp', clock(m.ts)));
@@ -303,29 +313,141 @@ $('#add-form').onsubmit = async e => {
   } catch (err) { $('#add-err').textContent = err.message; }
 };
 
-// profile
+// ---------- profile & settings ----------
+const VIS = [
+  ['photo', 'Photo', 'Your profile picture'],
+  ['banner', 'Banner', 'The image across the top of your profile'],
+  ['status', 'Status', 'Your status message'],
+  ['bio', 'Bio', 'Your short description'],
+  ['gender', 'Gender', 'The gender you chose'],
+  ['age', 'Age', 'Your age'],
+];
+for (const [key, title, desc] of VIS) {
+  const row = h('label', 'toggle'), text = h('span'), box = h('input');
+  text.append(h('b', '', title), h('small', '', desc));
+  box.type = 'checkbox'; box.dataset.vis = key; box.setAttribute('role', 'switch');
+  row.append(text, box); $('#vis-list').append(row);
+}
+const visBox = k => document.querySelector(`[data-vis="${k}"]`);
+
 let pickedColor = 0;
 function paintSwatches() {
   const box = $('#swatches'); box.replaceChildren();
   for (const hue of HUES) {
     const b = h('button', 'sw'); b.type = 'button'; b.style.background = hsl(hue, 46);
     b.setAttribute('aria-label', 'Color ' + hue); b.setAttribute('aria-pressed', String(hue === pickedColor));
-    b.onclick = () => { pickedColor = hue; paintSwatches(); };
+    b.onclick = () => { pickedColor = hue; paintSwatches(); paintMedia(); };
     box.append(b);
   }
 }
-$('#me-btn').onclick = () => {
-  $('#profile-name').value = state.me.name; $('#profile-key').value = state.me.token;
-  pickedColor = HUES.includes(state.me.color) ? state.me.color : HUES[0];
-  paintSwatches(); $('#profile-dialog').showModal();
-};
+function paintCover(el, url, color) {
+  el.style.backgroundColor = hsl(color, 40);
+  el.style.backgroundImage = url ? `url("${url}")` : 'none';
+}
+function paintMedia() {
+  const me = { ...state.me, color: pickedColor };
+  paintCover($('#pf-banner'), me.banner, me.color);
+  $('#pf-photo').replaceChildren(avatar(me, 'xl'));
+  $('#banner-remove').hidden = !me.banner; $('#photo-remove').hidden = !me.photo;
+}
+function setTab(name) {
+  for (const b of document.querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+  for (const p of document.querySelectorAll('[data-panel]')) p.hidden = p.dataset.panel !== name;
+}
+document.querySelectorAll('[data-tab]').forEach(b => { b.onclick = () => setTab(b.dataset.tab); });
+$('#profile-form').addEventListener('invalid', () => setTab('profile'), true);
+
+function openSettings() {
+  const me = state.me;
+  $('#pf-name').value = me.name; $('#pf-status').value = me.status || ''; $('#pf-bio').value = me.bio || '';
+  $('#pf-gender').value = me.gender || ''; $('#pf-age').value = me.age ?? '';
+  $('#profile-key').value = me.token;
+  for (const [k] of VIS) visBox(k).checked = !!me.vis[k];
+  pickedColor = me.color;
+  paintSwatches(); paintMedia(); setTab('profile');
+  if (!$('#profile-dialog').open) $('#profile-dialog').showModal();
+}
+$('#me-btn').onclick = openSettings;
+$('#settings-btn').onclick = openSettings;
+
 $('#profile-form').onsubmit = async e => {
   e.preventDefault();
+  const vis = {};
+  for (const [k] of VIS) vis[k] = visBox(k).checked;
   try {
-    const { me } = await api('/profile', { name: $('#profile-name').value, color: pickedColor });
+    const { me } = await api('/profile', {
+      name: $('#pf-name').value, color: pickedColor, status: $('#pf-status').value, bio: $('#pf-bio').value,
+      gender: $('#pf-gender').value, age: $('#pf-age').value, vis,
+    });
     state.me = me; renderMe(); renderList(); $('#profile-dialog').close(); toast('Profile saved');
   } catch (err) { toast(err.message); }
 };
+
+// Photos and banners are cropped and shrunk to a JPEG in the browser first
+// (this also strips hidden photo data such as GPS location).
+async function toJpeg(file, w, hgt, quality) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.max(w / bmp.width, hgt / bmp.height);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = hgt;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, hgt);
+  ctx.drawImage(bmp, (w - bmp.width * scale) / 2, (hgt - bmp.height * scale) / 2, bmp.width * scale, bmp.height * scale);
+  return new Promise((ok, no) => cv.toBlob(b => (b ? ok(b) : no(new Error('bad image'))), 'image/jpeg', quality));
+}
+async function upload(kind, blob) {          // no blob means remove
+  let r;
+  try { r = await fetch('/api/image?kind=' + kind, { method: 'POST', headers: { 'x-token': token, 'Content-Type': 'image/jpeg' }, body: blob || '' }); }
+  catch { throw new Error('No connection. Try again.'); }
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'Upload failed. Try again.');
+  return d.me;
+}
+async function setImage(kind, file, doneMsg) {
+  try {
+    let blob = null;
+    if (file) blob = await toJpeg(file, kind === 'photo' ? 320 : 1000, kind === 'photo' ? 320 : 333, kind === 'photo' ? .85 : .8)
+      .catch(() => { throw new Error('Could not read that image. Try a JPG or PNG.'); });
+    state.me = await upload(kind, blob);
+    renderMe(); renderList(); paintMedia(); toast(doneMsg);
+  } catch (err) { toast(err.message); }
+}
+for (const kind of ['photo', 'banner']) {
+  const input = $('#file-' + kind), name = kind === 'photo' ? 'Photo' : 'Banner';
+  $('#' + kind + '-change').onclick = () => input.click();
+  input.onchange = () => { const f = input.files[0]; input.value = ''; if (f) setImage(kind, f, name + ' updated'); };
+  $('#' + kind + '-remove').onclick = () => setImage(kind, null, name + ' removed');
+}
+
+// Someone else's profile card
+async function showCard(id) {
+  if (id === state.me.id) return openSettings();
+  let u;
+  try { u = (await api('/user?id=' + encodeURIComponent(id))).user; } catch (e) { return toast(e.message); }
+  const cover = h('div', 'cover'); paintCover(cover, u.banner, u.color);
+  const x = h('button', 'icon-btn card-x', '\u00d7'); x.type = 'button'; x.setAttribute('aria-label', 'Close'); x.dataset.close = '';
+  cover.append(x);
+  const body = h('div', 'card-body'), top = h('div', 'card-top');
+  top.append(avatar(u, 'xl', u.online));
+  body.append(top, h('h2', '', u.name), h('p', 'hint', (u.online ? 'Online' : 'Offline') + ' \u00b7 ID ' + u.id));
+  if (u.status) body.append(h('p', 'card-status', u.status));
+  if (u.bio) body.append(h('p', 'card-bio', u.bio));
+  const facts = h('div', 'facts');
+  if (u.gender) facts.append(h('span', 'fact', u.gender));
+  if (u.age) facts.append(h('span', 'fact', u.age + ' years old'));
+  if (facts.children.length) body.append(facts);
+  const act = h('div', 'inline end'), go = h('button', 'btn', u.isContact ? 'Message' : 'Add contact');
+  go.type = 'button';
+  go.onclick = async () => {
+    try {
+      if (!u.isContact) { await api('/contacts', { id: u.id }); await loadMe(); toast(`${u.name} added`); }
+      $('#card-dialog').close(); await selectRoom(dmRoom(state.me.id, u.id));
+    } catch (err) { toast(err.message); }
+  };
+  act.append(go); body.append(act);
+  $('#card').replaceChildren(cover, body);
+  $('#card-dialog').showModal();
+}
+$('#head-who').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } });
 $('#copy-key').onclick = () => copy(state.me.token);
 $('#signout').onclick = () => {
   if (!confirm('Sign out? Make sure you have saved your account key, or you will lose access to this account.')) return;

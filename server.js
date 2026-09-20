@@ -12,6 +12,10 @@ const OLD_FILE = path.join(__dirname, 'messages.json');
 const PAGES = { '/': 'index.html', '/index.html': 'index.html', '/script.js': 'script.js', '/style.css': 'style.css' };
 const MIME = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8' };
 const ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32 chars, no I/O/0/1
+const UPLOADS = path.join(__dirname, 'uploads');
+const GENDERS = ['Male', 'Female', 'Non-binary', 'Other'];
+const VIS_KEYS = ['photo', 'banner', 'status', 'bio', 'gender', 'age'];
+const VIS_DEFAULT = { photo: true, banner: true, status: true, bio: true, gender: false, age: false };
 
 const rand = n => crypto.randomBytes(n).toString('hex');
 const clean = (s, max) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -32,6 +36,12 @@ try {
     }
   } catch { /* nothing to import */ }
 }
+// Older accounts get empty profiles; private-by-default for gender and age.
+function ensure(u) {
+  u.profile = { bio: '', status: '', gender: '', age: null, photo: null, banner: null, ...u.profile };
+  u.vis = { ...VIS_DEFAULT, ...u.vis };
+}
+Object.values(db.users).forEach(ensure);
 const byToken = new Map(Object.values(db.users).map(u => [u.token, u]));
 
 let saveTimer;
@@ -52,8 +62,20 @@ for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { saveNow()
 const clients = new Map();   // userId -> Set of open event streams
 const lastSend = new Map();  // userId -> timestamp, simple flood guard
 const isOnline = id => (clients.get(id)?.size || 0) > 0;
-const view = u => ({ id: u.id, name: u.name, color: u.color, online: isOnline(u.id) });
-const mine = u => ({ ...view(u), token: u.token });
+const imgUrl = f => (f ? '/u/' + f : null);
+// What other people may see in lists: only fields the owner left visible.
+const view = u => ({ id: u.id, name: u.name, color: u.color, online: isOnline(u.id),
+  photo: u.vis.photo ? imgUrl(u.profile.photo) : null, status: u.vis.status ? u.profile.status : '' });
+// Everything, for the owner only.
+const mine = u => ({ id: u.id, name: u.name, color: u.color, online: isOnline(u.id), token: u.token,
+  photo: imgUrl(u.profile.photo), banner: imgUrl(u.profile.banner), status: u.profile.status, bio: u.profile.bio,
+  gender: u.profile.gender, age: u.profile.age, vis: u.vis });
+// The profile card. Hidden fields look exactly like empty ones.
+function fullProfile(u, viewer) {
+  const p = u.profile, v = u.vis;
+  return { ...view(u), banner: v.banner ? imgUrl(p.banner) : null, bio: v.bio ? p.bio : '',
+    gender: v.gender ? p.gender : '', age: v.age ? p.age : null, isContact: viewer.contacts.includes(u.id) };
+}
 const dmRoom = (a, b) => 'dm:' + [a, b].sort().join(':');
 
 function newId() {
@@ -100,6 +122,14 @@ function readBody(req) {
     req.on('error', reject);
   });
 }
+function readRaw(req, limit) {
+  return new Promise((resolve, reject) => {
+    const parts = []; let size = 0, over = false;
+    req.on('data', c => { size += c.length; if (size > limit * 4) req.destroy(); else if (size > limit) over = true; else parts.push(c); });
+    req.on('end', () => over ? reject(Object.assign(new Error('Too large'), { status: 413 })) : resolve(Buffer.concat(parts)));
+    req.on('error', reject);
+  });
+}
 const json = (res, code, obj) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(obj));
@@ -113,7 +143,7 @@ async function api(req, res, url) {
   if (p === '/api/register' && post) {
     const b = await readBody(req);
     const u = { id: newId(), name: clean(b.name, 24) || 'Guest', color: Math.floor(Math.random() * 360), token: rand(24), contacts: [], created: Date.now() };
-    db.users[u.id] = u; byToken.set(u.token, u); save();
+    ensure(u); db.users[u.id] = u; byToken.set(u.token, u); save();
     return json(res, 200, { me: mine(u) });
   }
 
@@ -144,7 +174,39 @@ async function api(req, res, url) {
   if (p === '/api/profile' && post) {
     const b = await readBody(req);
     const name = clean(b.name, 24); if (name) me.name = name;
-    const c = Number(b.color); if (Number.isInteger(c) && c >= 0 && c < 360) me.color = c;
+    const c = Number(b.color); if (b.color != null && Number.isInteger(c) && c >= 0 && c < 360) me.color = c;
+    const pr = me.profile;
+    if ('status' in b) pr.status = clean(b.status, 60);
+    if ('bio' in b) pr.bio = clean(b.bio, 160);
+    if ('gender' in b) pr.gender = GENDERS.includes(b.gender) ? b.gender : '';
+    if ('age' in b) { const a = Math.round(Number(b.age)); pr.age = b.age !== '' && b.age != null && a >= 13 && a <= 120 ? a : null; }
+    if (b.vis && typeof b.vis === 'object') for (const k of VIS_KEYS) if (typeof b.vis[k] === 'boolean') me.vis[k] = b.vis[k];
+    save(); push([me.id, ...me.contacts], { type: 'refresh' });
+    return json(res, 200, { me: mine(me) });
+  }
+
+  // Someone's profile card (respects their visibility settings)
+  if (p === '/api/user' && get) {
+    const u = db.users[clean(url.searchParams.get('id'), 12).toUpperCase()];
+    if (!u) return json(res, 404, { error: 'No one has that ID.' });
+    return json(res, 200, { user: fullProfile(u, me) });
+  }
+
+  // Upload a photo or banner (the browser sends a resized JPEG). An empty body removes it.
+  if (p === '/api/image' && post) {
+    const kind = url.searchParams.get('kind');
+    if (kind !== 'photo' && kind !== 'banner') return json(res, 400, { error: 'Unknown image type.' });
+    const buf = await readRaw(req, kind === 'photo' ? 250e3 : 600e3);
+    const old = me.profile[kind];
+    if (!buf.length) me.profile[kind] = null;
+    else {
+      if (!(buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)) return json(res, 400, { error: 'Please choose a JPG or PNG image.' });
+      const file = rand(12) + '.jpg';
+      fs.mkdirSync(UPLOADS, { recursive: true });
+      fs.writeFileSync(path.join(UPLOADS, file), buf);
+      me.profile[kind] = file;
+    }
+    if (old) fs.unlink(path.join(UPLOADS, old), () => {});
     save(); push([me.id, ...me.contacts], { type: 'refresh' });
     return json(res, 200, { me: mine(me) });
   }
@@ -198,6 +260,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+    if (req.method === 'GET' && /^\/u\/[a-f0-9]{24}\.jpg$/.test(url.pathname)) {   // uploaded photos and banners
+      return fs.readFile(path.join(UPLOADS, url.pathname.slice(3)), (err, buf) => {
+        if (err) { res.writeHead(404); return res.end('Not found'); }
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+        res.end(buf);
+      });
+    }
     const file = PAGES[url.pathname];
     if (!file || req.method !== 'GET') { res.writeHead(404); return res.end('Not found'); }
     fs.readFile(path.join(__dirname, file), (err, buf) => {
@@ -205,8 +274,8 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': MIME[file.split('.').pop()], 'Cache-Control': 'no-cache' });
       res.end(buf);
     });
-  } catch {
-    if (!res.headersSent) json(res, 400, { error: 'Bad request' }); else res.end();
+  } catch (e) {
+    if (!res.headersSent) json(res, e.status || 400, { error: e.status === 413 ? 'That image is too large.' : 'Bad request' }); else res.end();
   }
 });
 server.keepAliveTimeout = 65000; // longer than most proxies, avoids random resets
