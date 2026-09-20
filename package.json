@@ -1,9 +1,9 @@
 {
   "name": "commons",
-  "version": "2.0.0",
-  "description": "A simple shared chat room",
+  "version": "3.0.0",
   "private": true,
-  "scripts": {
-    "start": "node server.js"
-  }
+  "description": "A simple chat app with IDs, contacts and direct messages",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
 }

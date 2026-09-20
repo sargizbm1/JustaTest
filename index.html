@@ -1,52 +1,116 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Commons – chat</title>
-
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Commons</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div class="shell" id="shell">
 
-  <main class="app">
-    <header class="topbar">
-      <div class="brand">
+  <aside class="side">
+    <div class="side-head">
+      <div>
         <h1>Commons</h1>
-        <p>Room: general</p>
+        <span class="status" id="status" data-on="false"><i></i><span id="status-text">Connecting</span></span>
       </div>
-      <div class="actions">
-        <span class="status" id="status" role="status" data-state="connecting">
-          <span class="dot" aria-hidden="true"></span>
-          <span id="status-text">Connecting</span>
-        </span>
-        <button type="button" class="btn-ghost" id="rename-btn">Change name</button>
+      <button type="button" class="icon-btn" id="add-btn" aria-label="Add contact" title="Add contact">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6"/><path d="M19 8v6M16 11h6"/></svg>
+      </button>
+    </div>
+
+    <div class="idcard">
+      <div>
+        <small>Your ID. Friends add you with this</small>
+        <code id="my-id">······</code>
       </div>
+      <button type="button" class="chip" id="copy-id">Copy</button>
+    </div>
+
+    <button type="button" class="me" id="me-btn">
+      <span id="me-avatar"></span>
+      <span class="me-text"><b id="me-name"></b><small>Edit profile</small></span>
+    </button>
+
+    <input class="field search" id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off">
+    <ul class="list" id="list"></ul>
+  </aside>
+
+  <section class="chat">
+    <header class="chat-head">
+      <button type="button" class="icon-btn back" id="back" aria-label="Back to chats">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <div class="who" id="head-who"></div>
     </header>
-
-    <section class="messages" id="messages" role="log" aria-live="polite" aria-label="Messages">
-      <p class="empty" id="empty">No messages yet. Say hello to anyone who has this link.</p>
-    </section>
-
+    <div class="messages" id="messages" role="log" aria-live="polite" aria-label="Messages"></div>
     <form class="composer" id="composer" autocomplete="off">
       <label for="text" class="sr-only">Message</label>
-      <input type="text" id="text" placeholder="Write a message" maxlength="500" required>
-      <button type="submit" class="btn-send">Send</button>
+      <input class="field" type="text" id="text" placeholder="Write a message" maxlength="500" required>
+      <button type="submit" class="send" aria-label="Send message">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+      </button>
     </form>
-  </main>
+  </section>
+</div>
 
-  <dialog id="name-dialog">
-    <form id="name-form">
-      <h2>What should we call you?</h2>
-      <label for="name-input" class="sr-only">Your name</label>
-      <input type="text" id="name-input" placeholder="Your name" maxlength="24" required>
-      <button type="submit" class="btn-send">Save name</button>
-    </form>
-  </dialog>
+<dialog id="welcome">
+  <form id="welcome-form">
+    <h2>Welcome to Commons</h2>
+    <p class="hint">Pick a name. You will get a personal ID that friends can use to add you.</p>
+    <input class="field" id="welcome-name" placeholder="Your name" maxlength="24" aria-label="Your name" required>
+    <p class="err" id="welcome-err" role="alert"></p>
+    <button class="btn" type="submit">Get started</button>
+  </form>
+  <form id="key-form" class="alt">
+    <p class="hint">Already have an account? Paste your account key.</p>
+    <div class="inline">
+      <input class="field" id="key-input" placeholder="Account key" aria-label="Account key" required>
+      <button class="btn ghost" type="submit">Sign in</button>
+    </div>
+    <p class="err" id="key-err" role="alert"></p>
+  </form>
+</dialog>
 
-  <script src="script.js"></script>
+<dialog id="add-dialog">
+  <form id="add-form">
+    <h2>Add a contact</h2>
+    <p class="hint">Enter the 6-character ID your friend sees at the top of their chat list.</p>
+    <input class="field id-input" id="add-id" placeholder="K7QX2M" maxlength="8" aria-label="Contact ID" autocomplete="off" autocapitalize="characters" required>
+    <p class="err" id="add-err" role="alert"></p>
+    <div class="inline end">
+      <button class="btn ghost" type="button" data-close>Cancel</button>
+      <button class="btn" type="submit">Add contact</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="profile-dialog">
+  <form id="profile-form">
+    <h2>Your profile</h2>
+    <input class="field" id="profile-name" maxlength="24" aria-label="Your name" required>
+    <div class="swatches" id="swatches" role="group" aria-label="Avatar color"></div>
+    <div class="keybox">
+      <label for="profile-key">Account key</label>
+      <div class="inline">
+        <input class="field" id="profile-key" type="password" readonly>
+        <button class="btn ghost" type="button" id="copy-key">Copy</button>
+      </div>
+      <p class="hint">Use this key to sign in on another device. Anyone who has it can sign in as you, so keep it private.</p>
+    </div>
+    <div class="inline end">
+      <button class="btn ghost danger" type="button" id="signout">Sign out</button>
+      <button class="btn" type="submit">Save changes</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+<script src="script.js"></script>
 </body>
 </html>

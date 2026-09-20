@@ -1,204 +1,198 @@
-// Commons v2 – chat server
-// Uses only Node.js built-in modules, so there is nothing to install.
-//
-// How it works:
-//   GET  /api/messages?after=ID            -> messages newer than ID, right away
-//   GET  /api/messages?after=ID&wait=1     -> waits (up to 25s) until a newer message arrives
-//   POST /api/messages                     -> add a message
-// Messages are kept in memory and saved to messages.json so they survive restarts.
+'use strict';
+// Commons v3 – accounts, IDs, contacts, direct messages, live updates.
+// Node 18+, no packages. Data is saved to data.json.
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
+const PORT = process.env.PORT || 8080;
+const DATA_FILE = path.join(__dirname, 'data.json');
+const OLD_FILE = path.join(__dirname, 'messages.json');
+const PAGES = { '/': 'index.html', '/index.html': 'index.html', '/script.js': 'script.js', '/style.css': 'style.css' };
+const MIME = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8' };
+const ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32 chars, no I/O/0/1
 
-const PORT = Number(process.env.PORT) || 8080;
-const HOST = "0.0.0.0";
-const DATA_FILE = path.join(__dirname, "messages.json");
+const rand = n => crypto.randomBytes(n).toString('hex');
+const clean = (s, max) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
-const MAX_HISTORY = 200; // messages kept
-const MAX_TEXT = 500; // characters per message
-const MAX_NAME = 24; // characters per name
-const MAX_BODY_BYTES = 4096; // largest request body accepted
-const WAIT_MS = 25000; // how long a "wait" request is held open
-
-// Only these files are ever served, so server.js and messages.json stay private.
-const STATIC_FILES = {
-  "/": "index.html",
-  "/index.html": "index.html",
-  "/style.css": "style.css",
-  "/script.js": "script.js",
-};
-
-const CONTENT_TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-};
-
-/* ---------- Message store ---------- */
-
-let messages = [];
+// ---------- storage ----------
+let db = { users: {}, messages: [] };
 try {
-  const saved = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  if (Array.isArray(saved)) messages = saved.slice(-MAX_HISTORY);
+  db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
 } catch {
-  // no saved file yet, start empty
+  try { // first run: import the old shared-room history if it exists
+    const old = JSON.parse(fs.readFileSync(OLD_FILE, 'utf8'));
+    if (Array.isArray(old)) {
+      db.messages = old.filter(m => m && typeof m.text === 'string').map(m => ({
+        id: rand(6), room: 'general', from: null,
+        legacyName: clean(m.name || m.user || m.author, 24) || 'Guest',
+        text: m.text.slice(0, 500), ts: Number(m.ts || m.time || m.timestamp) || Date.now(),
+      }));
+    }
+  } catch { /* nothing to import */ }
 }
+const byToken = new Map(Object.values(db.users).map(u => [u.token, u]));
 
-let nextId = messages.length ? messages[messages.length - 1].id + 1 : 1;
-
-let saveTimer = null;
-function saveSoon() {
+let saveTimer;
+function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    fs.writeFile(DATA_FILE, JSON.stringify(messages), (err) => {
-      if (err) console.error("Could not save messages:", err.message);
-    });
-  }, 300);
+  saveTimer = setTimeout(saveNow, 300);
 }
-
-function latestId() {
-  return messages.length ? messages[messages.length - 1].id : 0;
+function saveNow() {
+  fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify(db));
+  fs.renameSync(DATA_FILE + '.tmp', DATA_FILE);
 }
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { saveNow(); } catch {} process.exit(0); });
 
-function newerThan(id) {
-  return messages.filter((m) => m.id > id);
+// ---------- helpers ----------
+const clients = new Map();   // userId -> Set of open event streams
+const lastSend = new Map();  // userId -> timestamp, simple flood guard
+const isOnline = id => (clients.get(id)?.size || 0) > 0;
+const view = u => ({ id: u.id, name: u.name, color: u.color, online: isOnline(u.id) });
+const mine = u => ({ ...view(u), token: u.token });
+const dmRoom = (a, b) => 'dm:' + [a, b].sort().join(':');
+
+function newId() {
+  let id;
+  do { id = Array.from(crypto.randomBytes(6), b => ID_CHARS[b % 32]).join(''); } while (db.users[id]);
+  return id;
 }
-
-/* ---------- Waiting requests ---------- */
-
-const waiters = new Set();
-
-function releaseWaiter(waiter) {
-  if (!waiters.delete(waiter)) return;
-  clearTimeout(waiter.timer);
-  sendJson(waiter.res, 200, {
-    messages: newerThan(waiter.after),
-    latest: latestId(),
-  });
+function pubMsg(m) {
+  const u = db.users[m.from];
+  return { id: m.id, room: m.room, from: m.from, name: u ? u.name : (m.legacyName || 'Guest'), color: u ? u.color : 220, text: m.text, ts: m.ts };
 }
-
-function wakeAllWaiters() {
-  for (const waiter of [...waiters]) releaseWaiter(waiter);
+function roomMembers(room) { return room.slice(3).split(':'); }
+function canAccess(u, room) {
+  if (room === 'general') return true;
+  if (typeof room !== 'string' || !room.startsWith('dm:')) return false;
+  const ids = roomMembers(room);
+  if (ids.length !== 2 || !ids.includes(u.id)) return false;
+  return u.contacts.includes(ids[0] === u.id ? ids[1] : ids[0]);
 }
-
-/* ---------- Helpers ---------- */
-
-function sendJson(res, status, body) {
-  if (res.writableEnded) return;
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(JSON.stringify(body));
+function lastByRoom(rooms) {
+  const need = new Set(rooms), out = {};
+  for (let i = db.messages.length - 1; i >= 0 && need.size; i--) {
+    const m = db.messages[i];
+    if (need.has(m.room)) { out[m.room] = pubMsg(m); need.delete(m.room); }
+  }
+  return out;
 }
+function push(ids, event) {
+  const line = `data: ${JSON.stringify(event)}\n\n`;
+  for (const id of new Set(ids)) for (const res of clients.get(id) || []) res.write(line);
+}
+setInterval(() => { for (const set of clients.values()) for (const res of set) res.write(':\n\n'); }, 25000);
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let size = 0;
-    const chunks = [];
-    req.on("data", (chunk) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(new Error("too large"));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    let s = '';
+    req.on('data', c => { s += c; if (s.length > 10000) { reject(new Error('Too large')); req.destroy(); } });
+    req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } });
+    req.on('error', reject);
   });
 }
+const json = (res, code, obj) => {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(obj));
+};
 
-function serveStatic(res, fileName) {
-  fs.readFile(path.join(__dirname, fileName), (err, data) => {
-    if (err) {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Not found");
-      return;
-    }
-    res.writeHead(200, {
-      "Content-Type": CONTENT_TYPES[path.extname(fileName)] || "text/plain",
-      "Cache-Control": "no-cache",
-      "X-Content-Type-Options": "nosniff",
+// ---------- API ----------
+async function api(req, res, url) {
+  const p = url.pathname, get = req.method === 'GET', post = req.method === 'POST';
+
+  if (p === '/api/register' && post) {
+    const b = await readBody(req);
+    const u = { id: newId(), name: clean(b.name, 24) || 'Guest', color: Math.floor(Math.random() * 360), token: rand(24), contacts: [], created: Date.now() };
+    db.users[u.id] = u; byToken.set(u.token, u); save();
+    return json(res, 200, { me: mine(u) });
+  }
+
+  const me = byToken.get(req.headers['x-token'] || url.searchParams.get('token'));
+  if (!me) return json(res, 401, { error: 'Not signed in' });
+
+  if (p === '/api/events' && get) {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    res.write('retry: 2000\n\n');
+    let set = clients.get(me.id);
+    if (!set) clients.set(me.id, set = new Set());
+    const first = set.size === 0;
+    set.add(res);
+    if (first) push(me.contacts, { type: 'presence', id: me.id, online: true });
+    req.on('close', () => {
+      set.delete(res);
+      if (!set.size) push(me.contacts, { type: 'presence', id: me.id, online: false });
     });
-    res.end(data);
-  });
-}
-
-/* ---------- API ---------- */
-
-function handleGetMessages(req, res, url) {
-  const after = parseInt(url.searchParams.get("after") || "0", 10) || 0;
-  const wait = url.searchParams.get("wait") === "1";
-  const latest = latestId();
-
-  // Answer right away unless the caller is fully caught up and asked to wait.
-  if (!wait || latest !== after) {
-    sendJson(res, 200, { messages: newerThan(after), latest });
     return;
   }
 
-  const waiter = { res, after, timer: null };
-  waiter.timer = setTimeout(() => releaseWaiter(waiter), WAIT_MS);
-  waiters.add(waiter);
-  res.on("close", () => {
-    clearTimeout(waiter.timer);
-    waiters.delete(waiter);
-  });
+  if (p === '/api/me' && get) {
+    const contacts = me.contacts.map(id => ({ ...view(db.users[id]), room: dmRoom(me.id, id) }));
+    return json(res, 200, { me: mine(me), contacts, last: lastByRoom(['general', ...contacts.map(c => c.room)]) });
+  }
+
+  if (p === '/api/profile' && post) {
+    const b = await readBody(req);
+    const name = clean(b.name, 24); if (name) me.name = name;
+    const c = Number(b.color); if (Number.isInteger(c) && c >= 0 && c < 360) me.color = c;
+    save(); push([me.id, ...me.contacts], { type: 'refresh' });
+    return json(res, 200, { me: mine(me) });
+  }
+
+  if (p === '/api/contacts' && post) {
+    const b = await readBody(req);
+    const id = clean(b.id, 12).replace(/^#/, '').toUpperCase();
+    const other = db.users[id];
+    if (!other) return json(res, 404, { error: 'No one has that ID. Check it and try again.' });
+    if (other.id === me.id) return json(res, 400, { error: 'That is your own ID. Share it with a friend instead.' });
+    if (me.contacts.includes(id)) return json(res, 409, { error: `${other.name} is already in your contacts.` });
+    me.contacts.push(id);
+    if (!other.contacts.includes(me.id)) other.contacts.push(me.id);
+    save(); push([me.id, id], { type: 'refresh' });
+    return json(res, 200, { contact: view(other) });
+  }
+
+  if (p === '/api/messages' && get) {
+    const room = url.searchParams.get('room') || '';
+    if (!canAccess(me, room)) return json(res, 403, { error: 'You do not have access to that chat.' });
+    const out = [];
+    for (let i = db.messages.length - 1; i >= 0 && out.length < 150; i--) if (db.messages[i].room === room) out.push(pubMsg(db.messages[i]));
+    return json(res, 200, { messages: out.reverse() });
+  }
+
+  if (p === '/api/messages' && post) {
+    const b = await readBody(req);
+    const text = String(b.text ?? '').trim().slice(0, 500);
+    if (!text) return json(res, 400, { error: 'Write something first.' });
+    if (!canAccess(me, b.room)) return json(res, 403, { error: 'You do not have access to that chat.' });
+    const now = Date.now();
+    if (now - (lastSend.get(me.id) || 0) < 250) return json(res, 429, { error: 'Slow down a little.' });
+    lastSend.set(me.id, now);
+    const m = { id: rand(6), room: b.room, from: me.id, text, ts: now };
+    db.messages.push(m);
+    if (db.messages.length > 20000) db.messages.splice(0, 2000);
+    save();
+    const message = pubMsg(m);
+    push(m.room === 'general' ? [...clients.keys()] : roomMembers(m.room), { type: 'message', message });
+    return json(res, 200, { message });
+  }
+
+  json(res, 404, { error: 'Not found' });
 }
 
-async function handlePostMessage(req, res) {
-  let data;
+// ---------- server ----------
+http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
   try {
-    data = JSON.parse(await readBody(req));
+    if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+    const file = PAGES[url.pathname];
+    if (!file || req.method !== 'GET') { res.writeHead(404); return res.end('Not found'); }
+    fs.readFile(path.join(__dirname, file), (err, buf) => {
+      if (err) { res.writeHead(500); return res.end('Error'); }
+      res.writeHead(200, { 'Content-Type': MIME[file.split('.').pop()], 'Cache-Control': 'no-cache' });
+      res.end(buf);
+    });
   } catch {
-    sendJson(res, 400, { error: "Invalid request." });
-    return;
+    if (!res.headersSent) json(res, 400, { error: 'Bad request' }); else res.end();
   }
-
-  const author = String(data.author || "").trim().slice(0, MAX_NAME);
-  const text = String(data.text || "").trim();
-  const senderId = String(data.senderId || "").slice(0, 64);
-
-  if (!author || !senderId) {
-    sendJson(res, 400, { error: "A name is required." });
-    return;
-  }
-  if (!text || text.length > MAX_TEXT) {
-    sendJson(res, 400, { error: `Messages must be 1 to ${MAX_TEXT} characters.` });
-    return;
-  }
-
-  const message = { id: nextId++, author, senderId, text, time: Date.now() };
-  messages.push(message);
-  if (messages.length > MAX_HISTORY) messages = messages.slice(-MAX_HISTORY);
-  saveSoon();
-  wakeAllWaiters();
-
-  sendJson(res, 201, { id: message.id });
-}
-
-/* ---------- Server ---------- */
-
-const server = http.createServer((req, res) => {
-  const url = new URL(req.url, "http://localhost");
-
-  if (url.pathname === "/api/messages") {
-    if (req.method === "GET") return handleGetMessages(req, res, url);
-    if (req.method === "POST") return handlePostMessage(req, res);
-    return sendJson(res, 405, { error: "Method not allowed." });
-  }
-
-  if ((req.method === "GET" || req.method === "HEAD") && STATIC_FILES[url.pathname]) {
-    return serveStatic(res, STATIC_FILES[url.pathname]);
-  }
-
-  res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end("Not found");
-});
-
-server.listen(PORT, HOST, () => {
-  console.log(`Commons is running on port ${PORT}`);
-});
+}).listen(PORT, () => console.log(`Commons running on http://localhost:${PORT}`));
