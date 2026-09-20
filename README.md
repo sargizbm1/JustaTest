@@ -15,6 +15,25 @@ A simple chat app: plain HTML, CSS and JavaScript in the browser, plus a small N
 - New look, light and dark mode, works on phones
 - Still no packages to install; the server uses only Node.js built-ins (Node 18 or newer)
 
+- Choose which part of your photo and banner shows (drag to move, slider to zoom)
+- Admin panel at `/admin`: see everyone, make admins, ban and mute people
+- Admins can use custom colors (avatar, name, message bubble, profile)
+
+## Admin panel
+
+Open `http://YOUR_SERVER:8080/admin`. Default login: username `JustaTest`, password `Just11`.
+
+**Change these on a real server.** This repo is public, so the default password is visible to anyone.
+Start the server with your own login instead:
+
+```
+ADMIN_USER=myname ADMIN_PASS='a-long-password' node server.js
+```
+
+With the service, add `Environment=ADMIN_USER=myname` and `Environment=ADMIN_PASS=a-long-password`
+to `commons.service`, then `sudo systemctl daemon-reload && sudo systemctl restart commons`.
+Five wrong logins lock the panel for 15 minutes.
+
 ## Run
 
 ```

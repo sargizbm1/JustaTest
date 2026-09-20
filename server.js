@@ -9,13 +9,24 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 8080;
 const DATA_FILE = path.join(__dirname, 'data.json');
 const OLD_FILE = path.join(__dirname, 'messages.json');
-const PAGES = { '/': 'index.html', '/index.html': 'index.html', '/script.js': 'script.js', '/style.css': 'style.css' };
+const PAGES = { '/': 'index.html', '/index.html': 'index.html', '/script.js': 'script.js', '/style.css': 'style.css', '/admin': 'admin.html', '/admin.js': 'admin.js' };
 const MIME = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8' };
 const ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32 chars, no I/O/0/1
 const UPLOADS = path.join(__dirname, 'uploads');
 const GENDERS = ['Male', 'Female', 'Non-binary', 'Other'];
 const VIS_KEYS = ['photo', 'banner', 'status', 'bio', 'gender', 'age'];
 const VIS_DEFAULT = { photo: true, banner: true, status: true, bio: true, gender: false, age: false };
+
+// Site admin panel login (open /admin). CHANGE THESE on a public server by starting with
+// ADMIN_USER=... ADMIN_PASS=... node server.js  (this repo is public, so the defaults are not secret)
+const ADMIN_USER = process.env.ADMIN_USER || 'JustaTest';
+const ADMIN_PASS = process.env.ADMIN_PASS || 'Just11';
+const FOREVER = 8.64e15;
+const POS = { x: 50, y: 50, z: 1 };
+const THEME_KEYS = ['avatar', 'name', 'bubble', 'banner1', 'banner2'];
+const HEX = /^#[0-9a-f]{6}$/i;
+const num = (v, lo, hi, d) => { v = Number(v); return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d; };
+const cleanPos = p => ({ x: num(p?.x, 0, 100, 50), y: num(p?.y, 0, 100, 50), z: num(p?.z, 1, 3, 1) });
 
 const rand = n => crypto.randomBytes(n).toString('hex');
 const clean = (s, max) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -38,8 +49,10 @@ try {
 }
 // Older accounts get empty profiles; private-by-default for gender and age.
 function ensure(u) {
-  u.profile = { bio: '', status: '', gender: '', age: null, photo: null, banner: null, ...u.profile };
+  u.profile = { bio: '', status: '', gender: '', age: null, photo: null, banner: null, photoPos: { ...POS }, bannerPos: { ...POS }, ...u.profile };
   u.vis = { ...VIS_DEFAULT, ...u.vis };
+  u.admin = !!u.admin; u.banned = u.banned || null; u.mutedUntil = u.mutedUntil || 0;
+  u.theme = { avatar: '', name: '', bubble: '', banner1: '', banner2: '', ...u.theme };   // custom colors, admins only
 }
 Object.values(db.users).forEach(ensure);
 const byToken = new Map(Object.values(db.users).map(u => [u.token, u]));
@@ -64,16 +77,17 @@ const lastSend = new Map();  // userId -> timestamp, simple flood guard
 const isOnline = id => (clients.get(id)?.size || 0) > 0;
 const imgUrl = f => (f ? '/u/' + f : null);
 // What other people may see in lists: only fields the owner left visible.
-const view = u => ({ id: u.id, name: u.name, color: u.color, online: isOnline(u.id),
-  photo: u.vis.photo ? imgUrl(u.profile.photo) : null, status: u.vis.status ? u.profile.status : '' });
+const view = u => ({ id: u.id, name: u.name, color: u.color, online: isOnline(u.id), admin: u.admin, theme: u.admin ? u.theme : null,
+  photo: u.vis.photo ? imgUrl(u.profile.photo) : null, photoPos: u.profile.photoPos, status: u.vis.status ? u.profile.status : '' });
 // Everything, for the owner only.
 const mine = u => ({ id: u.id, name: u.name, color: u.color, online: isOnline(u.id), token: u.token,
   photo: imgUrl(u.profile.photo), banner: imgUrl(u.profile.banner), status: u.profile.status, bio: u.profile.bio,
-  gender: u.profile.gender, age: u.profile.age, vis: u.vis });
+  gender: u.profile.gender, age: u.profile.age, vis: u.vis, admin: u.admin, theme: u.theme,
+  photoPos: u.profile.photoPos, bannerPos: u.profile.bannerPos, mutedUntil: u.mutedUntil });
 // The profile card. Hidden fields look exactly like empty ones.
 function fullProfile(u, viewer) {
   const p = u.profile, v = u.vis;
-  return { ...view(u), banner: v.banner ? imgUrl(p.banner) : null, bio: v.bio ? p.bio : '',
+  return { ...view(u), banner: v.banner ? imgUrl(p.banner) : null, bannerPos: p.bannerPos, bio: v.bio ? p.bio : '',
     gender: v.gender ? p.gender : '', age: v.age ? p.age : null, isContact: viewer.contacts.includes(u.id) };
 }
 const dmRoom = (a, b) => 'dm:' + [a, b].sort().join(':');
@@ -85,7 +99,8 @@ function newId() {
 }
 function pubMsg(m) {
   const u = db.users[m.from];
-  return { id: m.id, room: m.room, from: m.from, name: u ? u.name : (m.legacyName || 'Guest'), color: u ? u.color : 220, text: m.text, ts: m.ts };
+  return { id: m.id, room: m.room, from: m.from, name: u ? u.name : (m.legacyName || 'Guest'), color: u ? u.color : 220, text: m.text, ts: m.ts,
+    admin: !!u?.admin, nameColor: u?.admin ? u.theme.name : '', bubble: u?.admin ? u.theme.bubble : '' };
 }
 function roomMembers(room) { return room.slice(3).split(':'); }
 function canAccess(u, room) {
@@ -150,8 +165,12 @@ async function api(req, res, url) {
     return json(res, 200, { me: mine(u) });
   }
 
+  if (p.startsWith('/api/admin/')) return await adminApi(req, res, p);
+
   const me = byToken.get(req.headers['x-token'] || url.searchParams.get('token'));
   if (!me) return json(res, 401, { error: 'Not signed in' });
+  if (me.banned) return json(res, 403, { error: bannedText(me), banned: true });
+  if (Date.now() - (me.lastSeen || 0) > 60000) { me.lastSeen = Date.now(); save(); }
 
   if (p === '/api/events' && get) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -184,6 +203,10 @@ async function api(req, res, url) {
     if ('gender' in b) pr.gender = GENDERS.includes(b.gender) ? b.gender : '';
     if ('age' in b) { const a = Math.round(Number(b.age)); pr.age = b.age !== '' && b.age != null && a >= 13 && a <= 120 ? a : null; }
     if (b.vis && typeof b.vis === 'object') for (const k of VIS_KEYS) if (typeof b.vis[k] === 'boolean') me.vis[k] = b.vis[k];
+    if (b.photoPos) pr.photoPos = cleanPos(b.photoPos);
+    if (b.bannerPos) pr.bannerPos = cleanPos(b.bannerPos);
+    if (me.admin && b.theme && typeof b.theme === 'object')     // custom colors are an admin perk
+      for (const k of THEME_KEYS) if (typeof b.theme[k] === 'string') me.theme[k] = HEX.test(b.theme[k]) ? b.theme[k].toLowerCase() : '';
     save(); push([me.id, ...me.contacts], { type: 'refresh' });
     return json(res, 200, { me: mine(me) });
   }
@@ -199,8 +222,9 @@ async function api(req, res, url) {
   if (p === '/api/image' && post) {
     const kind = url.searchParams.get('kind');
     if (kind !== 'photo' && kind !== 'banner') return json(res, 400, { error: 'Unknown image type.' });
-    const buf = await readRaw(req, kind === 'photo' ? 250e3 : 600e3);
+    const buf = await readRaw(req, kind === 'photo' ? 400e3 : 800e3);
     const old = me.profile[kind];
+    me.profile[kind + 'Pos'] = { ...POS };
     if (!buf.length) me.profile[kind] = null;
     else {
       if (!(buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)) return json(res, 400, { error: 'Please choose a JPG or PNG image.' });
@@ -240,6 +264,10 @@ async function api(req, res, url) {
     const text = String(b.text ?? '').trim().slice(0, 500);
     if (!text) return json(res, 400, { error: 'Write something first.' });
     if (!canAccess(me, b.room)) return json(res, 403, { error: 'You do not have access to that chat.' });
+    if (me.mutedUntil > Date.now()) {
+      const mins = Math.ceil((me.mutedUntil - Date.now()) / 60000);
+      return json(res, 403, { error: me.mutedUntil >= FOREVER ? 'You are muted.' : `You are muted for another ${mins} minute${mins === 1 ? '' : 's'}.`, muted: true });
+    }
     const cid = clean(b.cid, 40), dupKey = me.id + ':' + cid;
     if (cid && seen.has(dupKey)) return json(res, 200, { message: seen.get(dupKey) });
     const now = Date.now();
@@ -255,6 +283,66 @@ async function api(req, res, url) {
     return json(res, 200, { message });
   }
 
+  json(res, 404, { error: 'Not found' });
+}
+
+// ---------- admin panel API ----------
+const adminSessions = new Map();   // token -> expiry
+const loginFails = new Map();      // ip -> { n, until }
+const digest = x => crypto.createHash('sha256').update(String(x ?? '')).digest();
+const sameText = (a, b) => crypto.timingSafeEqual(digest(a), digest(b));
+const bannedText = u => 'Your account has been banned' + (u.banned?.reason ? ': ' + u.banned.reason : '.');
+function adminRow(u, count) {
+  return { ...view(u), admin: u.admin, banned: u.banned, mutedUntil: u.mutedUntil, created: u.created,
+    lastSeen: u.lastSeen || null, contacts: u.contacts.length, messages: count };
+}
+async function adminApi(req, res, p) {
+  const get = req.method === 'GET', post = req.method === 'POST';
+  if (p === '/api/admin/login' && post) {
+    const ip = req.socket.remoteAddress, f = loginFails.get(ip) || { n: 0, until: 0 };
+    if (f.until > Date.now()) return json(res, 429, { error: 'Too many attempts. Try again in a few minutes.' });
+    const b = await readBody(req);
+    const userOk = sameText(b.username, ADMIN_USER), passOk = sameText(b.password, ADMIN_PASS);
+    if (!(userOk && passOk)) {
+      if (++f.n >= 5) { f.until = Date.now() + 15 * 60000; f.n = 0; }
+      loginFails.set(ip, f);
+      return json(res, 401, { error: 'Wrong username or password.' });
+    }
+    loginFails.delete(ip);
+    for (const [t, exp] of adminSessions) if (exp < Date.now()) adminSessions.delete(t);
+    const token = rand(24); adminSessions.set(token, Date.now() + 12 * 3600e3);
+    return json(res, 200, { token });
+  }
+  const exp = adminSessions.get(req.headers['x-admin']);
+  if (!exp || exp < Date.now()) return json(res, 401, { error: 'Session expired. Please log in again.' });
+
+  if (p === '/api/admin/users' && get) {
+    const counts = {};
+    for (const m of db.messages) if (m.from) counts[m.from] = (counts[m.from] || 0) + 1;
+    const users = Object.values(db.users).map(u => adminRow(u, counts[u.id] || 0)).sort((a, b) => b.created - a.created);
+    return json(res, 200, { users });
+  }
+
+  if (p === '/api/admin/user' && post) {
+    const b = await readBody(req);
+    const u = db.users[clean(b.id, 12).toUpperCase()];
+    if (!u) return json(res, 404, { error: 'No such user.' });
+    switch (b.action) {
+      case 'admin': u.admin = true; break;
+      case 'unadmin': u.admin = false; break;
+      case 'ban': u.banned = { reason: clean(b.reason, 120), at: Date.now() }; break;
+      case 'unban': u.banned = null; break;
+      case 'mute': { const min = Number(b.minutes); u.mutedUntil = min > 0 ? Date.now() + min * 60000 : FOREVER; break; }
+      case 'unmute': u.mutedUntil = 0; break;
+      default: return json(res, 400, { error: 'Unknown action.' });
+    }
+    save();
+    if (b.action === 'ban') {            // kick them out right now
+      push([u.id], { type: 'banned', error: bannedText(u) });
+      for (const r of [...(clients.get(u.id) || [])]) r.end();
+    } else push([u.id, ...u.contacts], { type: 'refresh' });
+    return json(res, 200, { user: adminRow(u, db.messages.filter(m => m.from === u.id).length) });
+  }
   json(res, 404, { error: 'Not found' });
 }
 
@@ -275,7 +363,7 @@ const server = http.createServer(async (req, res) => {
     fs.readFile(path.join(__dirname, file), (err, buf) => {
       if (err) { res.writeHead(500); return res.end('Error'); }
       // Stamp script.js / style.css with a content hash so no browser or proxy can serve an outdated copy.
-      if (file === 'index.html') buf = Buffer.from(buf.toString().replace(/(src|href)="(script\.js|style\.css)"/g, (m, a, f) => `${a}="${f}?v=${assetVersion(f)}"`));
+      if (file.endsWith('.html')) buf = Buffer.from(buf.toString().replace(/(src|href)="(script\.js|style\.css|admin\.js)"/g, (m, a, f) => `${a}="${f}?v=${assetVersion(f)}"`));
       res.writeHead(200, { 'Content-Type': MIME[file.split('.').pop()], 'Cache-Control': 'no-store' });
       res.end(buf);
     });

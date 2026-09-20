@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Commons Admin</title>
+<script>
+  try {
+    var t = localStorage.getItem('commons.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="admin">
+<main class="admin-wrap">
+
+  <section class="admin-card" id="login">
+    <h1>Admin panel</h1>
+    <p class="hint">Sign in to manage the people on this site.</p>
+    <form id="login-form">
+      <input class="field" id="username" placeholder="Username" autocomplete="username" aria-label="Username" required>
+      <input class="field" id="password" type="password" placeholder="Password" autocomplete="current-password" aria-label="Password" required>
+      <p class="err" id="login-err" role="alert"></p>
+      <button class="btn" type="submit">Log in</button>
+    </form>
+  </section>
+
+  <section id="panel" hidden>
+    <div class="admin-head">
+      <h1>Admin panel</h1>
+      <button class="btn ghost small" type="button" id="logout">Log out</button>
+    </div>
+    <div class="stats" id="stats"></div>
+    <input class="field" id="q" type="search" placeholder="Search by name or ID" aria-label="Search users" autocomplete="off">
+    <div class="user-list" id="users"></div>
+  </section>
+</main>
+
+<dialog id="user-dialog" class="wide">
+  <div class="dlg-head"><h2>Manage user</h2><button type="button" class="icon-btn" data-close aria-label="Close">&times;</button></div>
+  <div class="detail" id="detail"></div>
+</dialog>
+<div class="toast" id="toast" role="status"></div>
+<script src="admin.js"></script>
+</body>
+</html>

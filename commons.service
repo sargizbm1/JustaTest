@@ -1,0 +1,18 @@
+[Unit]
+Description=Commons chat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Change this to the folder where the repo lives on your VPS
+WorkingDirectory=/root/JustaTest
+ExecStart=/usr/bin/node server.js
+Environment=PORT=8080
+# Change the admin panel login (open /admin):
+#Environment=ADMIN_USER=myname
+#Environment=ADMIN_PASS=a-long-password
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

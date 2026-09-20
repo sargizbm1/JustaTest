@@ -5,6 +5,7 @@ const HUES = [250, 330, 160, 30, 200, 285];
 
 const state = { me: null, contacts: [], last: {}, unread: {}, msgs: {}, room: 'general', es: null, filter: '' };
 let token = localStorage.getItem(TOKEN_KEY);
+let banned = false;
 const reads = JSON.parse(localStorage.getItem(READ_KEY) || '{}');
 const OUT_KEY = 'commons.outbox';
 let outbox = [];                         // messages waiting to be delivered
@@ -29,12 +30,28 @@ function dayLabel(ts) {
 }
 const hsl = (hue, l = 50) => `hsl(${hue} 68% ${l}%)`;
 
+// A picture layer that shows the part of the image the user picked (focus point + zoom).
+function setPic(el, url, pos) {
+  el.querySelector(':scope > .pic')?.remove();
+  if (!url) return;
+  const p = { x: 50, y: 50, z: 1, ...pos }, clip = h('span', 'pic'), inner = h('span', 'pic-in');
+  inner.style.backgroundImage = `url("${url}")`;
+  inner.style.backgroundPosition = `${p.x}% ${p.y}%`;
+  inner.style.transformOrigin = `${p.x}% ${p.y}%`;
+  inner.style.transform = `scale(${p.z})`;
+  clip.append(inner); el.prepend(clip);
+}
+const avatarColor = u => (u.admin && u.theme?.avatar) || hsl(u.color, 46);
+const coverBg = u => (u.admin && u.theme?.banner1)
+  ? `linear-gradient(135deg, ${u.theme.banner1}, ${u.theme.banner2 || u.theme.banner1})` : hsl(u.color, 40);
+const ink = hex => { const n = parseInt(hex.slice(1), 16); return ((n >> 16) * .299 + ((n >> 8) & 255) * .587 + (n & 255) * .114) > 150 ? '#111' : '#fff'; };
+
 function avatar(u, cls = '', online = false) {
   const el = h('span', 'avatar ' + cls);
   if (u === 'room') { el.classList.add('room'); el.textContent = '#'; }
   else {
-    el.style.backgroundColor = hsl(u.color, 46);
-    if (u.photo) { el.classList.add('has-photo'); el.style.backgroundImage = `url("${u.photo}")`; }
+    el.style.backgroundColor = avatarColor(u);
+    if (u.photo) setPic(el, u.photo, u.photoPos);
     else el.textContent = [...(u.name || '?')][0].toUpperCase();
   }
   if (online) el.append(h('i', 'dot'));
@@ -64,7 +81,10 @@ async function api(path, body) {
     });
   } catch { throw new Error('No connection. Trying again\u2026'); }
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(data.error || 'Something went wrong. Try again.'), { status: r.status });
+  if (!r.ok) {
+    if (data.banned) showBanned(data.error);
+    throw Object.assign(new Error(data.error || 'Something went wrong. Try again.'), { status: r.status });
+  }
   return data;
 }
 
@@ -98,7 +118,23 @@ function renderMe() {
   $('#me-name').textContent = state.me.name;
   $('#my-id').textContent = state.me.id;
   $('#me-avatar').replaceChildren(avatar(state.me));
+  updateComposer();
 }
+let muteTimer;
+function updateComposer() {
+  const until = state.me?.mutedUntil || 0, muted = until > Date.now();
+  $('#text').disabled = muted; $('#text').placeholder = muted ? 'You are muted' : 'Write a message';
+  $('#composer .send').disabled = muted;
+  clearTimeout(muteTimer);
+  if (muted && until - Date.now() < 2 ** 31) muteTimer = setTimeout(updateComposer, until - Date.now() + 500);
+}
+function showBanned(msg) {
+  banned = true; state.es?.close();
+  $('#banned-msg').textContent = msg || 'Your account has been banned.';
+  if (!$('#banned-dialog').open) $('#banned-dialog').showModal();
+}
+$('#banned-dialog').addEventListener('cancel', e => e.preventDefault());
+$('#banned-out').onclick = () => { localStorage.removeItem(TOKEN_KEY); location.reload(); };
 
 function renderList() {
   const ul = $('#list'), q = state.filter.trim().toLowerCase();
@@ -158,11 +194,15 @@ function renderMessages(stick) {
     const mine = m.from === state.me.id;
     const wrap = h('div', `msg ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}`);
     if (first && !mine && state.room === 'general') {
-      const w = h('button', 'who-name', m.name); w.type = 'button'; w.style.color = hsl(m.color, 46);
+      const row = h('div', 'name-row'), w = h('button', 'who-name', m.name);
+      w.type = 'button'; w.style.color = m.nameColor || hsl(m.color, 46);
       if (m.from) w.onclick = () => showCard(m.from);
-      wrap.append(w);
+      row.append(w); if (m.admin) row.append(h('span', 'tag', 'ADMIN'));
+      wrap.append(row);
     }
-    wrap.append(h('div', 'bubble', m.text));
+    const bub = h('div', 'bubble', m.text);
+    if (m.bubble) { bub.style.background = m.bubble; bub.style.color = ink(m.bubble); }
+    wrap.append(bub);
     if (last) wrap.append(h('span', 'stamp', clock(m.ts)));
     box.append(wrap);
   });
@@ -238,6 +278,7 @@ function setLive(on) {
 }
 let lastBeat = Date.now(), retryTimer, retryDelay = 1000, dropped = false;
 function connect() {
+  if (banned) return;
   clearTimeout(retryTimer);
   if (state.es) state.es.close();
   lastBeat = Date.now();
@@ -248,7 +289,7 @@ function connect() {
   };
   es.onerror = () => {
     dropped = true; setLive(false);
-    if (es.readyState === EventSource.CLOSED) {   // browser gave up (proxy error etc.), so retry ourselves
+    if (es.readyState === EventSource.CLOSED && !banned) {   // browser gave up (proxy error etc.), so retry ourselves
       retryTimer = setTimeout(connect, retryDelay);
       retryDelay = Math.min(retryDelay * 2, 15000);
     }
@@ -257,6 +298,7 @@ function connect() {
     lastBeat = Date.now();
     const ev = JSON.parse(e.data);
     if (ev.type === 'ping') return;
+    if (ev.type === 'banned') return showBanned(ev.error);
     if (ev.type === 'message') addMsg(ev.message);
     else if (ev.type === 'presence') {
       const c = state.contacts.find(x => x.id === ev.id);
@@ -275,7 +317,7 @@ async function resync() {
     flushOutbox();
   } catch { dropped = true; }
 }
-function reconnectNow() { if (state.me) { dropped = true; setLive(false); connect(); } }
+function reconnectNow() { if (state.me && !banned) { dropped = true; setLive(false); connect(); } }
 // A connection can die silently (sleeping phone, NAT timeout). No heartbeat for 40s means reconnect.
 setInterval(() => { if (state.me && Date.now() - lastBeat > 40000) reconnectNow(); }, 5000);
 addEventListener('online', reconnectNow);
@@ -340,15 +382,28 @@ function paintSwatches() {
     box.append(b);
   }
 }
-function paintCover(el, url, color) {
-  el.style.backgroundColor = hsl(color, 40);
-  el.style.backgroundImage = url ? `url("${url}")` : 'none';
+function paintCover(el, url, pos, u) {
+  el.style.background = coverBg(u);
+  setPic(el, url, pos);
 }
+let pend = { photoPos: { x: 50, y: 50, z: 1 }, bannerPos: { x: 50, y: 50, z: 1 } };   // unsaved picture framing
+let themePick = {};                                                                    // unsaved admin colors
+const previewUser = () => ({ ...state.me, color: pickedColor, theme: themePick, photoPos: pend.photoPos, bannerPos: pend.bannerPos });
 function paintMedia() {
-  const me = { ...state.me, color: pickedColor };
-  paintCover($('#pf-banner'), me.banner, me.color);
+  const me = previewUser();
+  paintCover($('#pf-banner'), me.banner, me.bannerPos, me);
   $('#pf-photo').replaceChildren(avatar(me, 'xl'));
-  $('#banner-remove').hidden = !me.banner; $('#photo-remove').hidden = !me.photo;
+  for (const k of ['photo', 'banner']) { $('#' + k + '-remove').hidden = !me[k]; $('#' + k + '-adjust').hidden = !me[k]; }
+}
+const THEME = [['avatar', 'Avatar color', '#5b5cf5'], ['name', 'Name color', '#f2f2f2'], ['bubble', 'Message bubble', '#3b3bff'],
+  ['banner1', 'Profile color 1', '#3b3bff'], ['banner2', 'Profile color 2', '#ff6ab0']];
+for (const [k, label, def] of THEME) {
+  const row = h('div', 'color-row'), input = h('input'), reset = h('button', 'btn ghost small', 'Default');
+  input.type = 'color'; input.value = def; input.dataset.tk = k; input.dataset.def = def; input.setAttribute('aria-label', label);
+  reset.type = 'button';
+  input.oninput = () => { themePick[k] = input.value; paintMedia(); };
+  reset.onclick = () => { themePick[k] = ''; input.value = def; paintMedia(); };
+  row.append(h('span', '', label), input, reset); $('#color-list').append(row);
 }
 function setTab(name) {
   for (const b of document.querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
@@ -369,6 +424,10 @@ function fillSettings() {
   $('#profile-key').value = me.token;
   for (const [k] of VIS) visBox(k).checked = !!me.vis[k];
   pickedColor = me.color;
+  pend = { photoPos: { ...me.photoPos }, bannerPos: { ...me.bannerPos } };
+  themePick = { ...me.theme };
+  $('#admin-colors').hidden = !me.admin;
+  document.querySelectorAll('[data-tk]').forEach(i => { i.value = themePick[i.dataset.tk] || i.dataset.def; });
   paintSwatches(); paintMedia(); setTab('profile');
 }
 $('#me-btn').onclick = openSettings;
@@ -382,57 +441,106 @@ $('#profile-form').onsubmit = async e => {
     const { me } = await api('/profile', {
       name: $('#pf-name').value, color: pickedColor, status: $('#pf-status').value, bio: $('#pf-bio').value,
       gender: $('#pf-gender').value, age: $('#pf-age').value, vis,
+      photoPos: pend.photoPos, bannerPos: pend.bannerPos, theme: state.me.admin ? themePick : undefined,
     });
     state.me = me; renderMe(); renderList(); $('#profile-dialog').close(); toast('Profile saved');
   } catch (err) { toast(err.message); }
 };
 
-// Photos and banners are cropped and shrunk to a JPEG in the browser first
-// (this also strips hidden photo data such as GPS location).
-async function toJpeg(file, w, hgt, quality) {
-  const bmp = await createImageBitmap(file);
-  const scale = Math.max(w / bmp.width, hgt / bmp.height);
-  const cv = document.createElement('canvas'); cv.width = w; cv.height = hgt;
+// Photos and banners are shrunk to a JPEG in the browser first (this also strips hidden photo data such as GPS location).
+// The whole picture is kept, so people can choose later which part of it shows.
+async function toJpeg(file, maxSide, limit) {
+  let bmp;
+  try { bmp = await createImageBitmap(file); } catch { throw new Error('Could not read that image. Try a JPG or PNG.'); }
+  const s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * s), hh = Math.round(bmp.height * s);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = hh;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, hgt);
-  ctx.drawImage(bmp, (w - bmp.width * scale) / 2, (hgt - bmp.height * scale) / 2, bmp.width * scale, bmp.height * scale);
-  return new Promise((ok, no) => cv.toBlob(b => (b ? ok(b) : no(new Error('bad image'))), 'image/jpeg', quality));
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, hh); ctx.drawImage(bmp, 0, 0, w, hh);
+  for (const q of [.85, .72, .6, .45]) {
+    const blob = await new Promise(ok => cv.toBlob(ok, 'image/jpeg', q));
+    if (blob && blob.size <= limit) return blob;
+  }
+  throw new Error('That image is too detailed. Try a smaller one.');
 }
 async function upload(kind, blob) {          // no blob means remove
   let r;
   try { r = await fetch('/api/image?kind=' + kind, { method: 'POST', headers: { 'x-token': token, 'Content-Type': 'image/jpeg' }, body: blob || '' }); }
   catch { throw new Error('No connection. Try again.'); }
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.error || 'Upload failed. Try again.');
+  if (!r.ok) { if (d.banned) showBanned(d.error); throw new Error(d.error || 'Upload failed. Try again.'); }
   return d.me;
 }
 async function setImage(kind, file, doneMsg) {
   try {
-    let blob = null;
-    if (file) blob = await toJpeg(file, kind === 'photo' ? 320 : 1000, kind === 'photo' ? 320 : 333, kind === 'photo' ? .85 : .8)
-      .catch(() => { throw new Error('Could not read that image. Try a JPG or PNG.'); });
+    const blob = file ? await toJpeg(file, kind === 'photo' ? 720 : 1400, kind === 'photo' ? 350e3 : 700e3) : null;
     state.me = await upload(kind, blob);
+    pend[kind + 'Pos'] = { ...state.me[kind + 'Pos'] };
     renderMe(); renderList(); paintMedia(); toast(doneMsg);
+    if (file) openCrop(kind);               // let them choose what part shows right away
   } catch (err) { toast(err.message); }
 }
 for (const kind of ['photo', 'banner']) {
   const input = $('#file-' + kind), name = kind === 'photo' ? 'Photo' : 'Banner';
   $('#' + kind + '-change').onclick = () => input.click();
+  $('#' + kind + '-adjust').onclick = () => openCrop(kind);
   input.onchange = () => { const f = input.files[0]; input.value = ''; if (f) setImage(kind, f, name + ' updated'); };
   $('#' + kind + '-remove').onclick = () => setImage(kind, null, name + ' removed');
 }
+
+// ---- choose which part of the picture shows: drag to move, slider to zoom ----
+const crop = { kind: null, pos: null, iw: 0, ih: 0 };
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const cropFrame = $('#crop-frame');
+function drawCrop() { setPic(cropFrame, state.me[crop.kind], crop.pos); }
+function openCrop(kind) {
+  if (!state.me[kind]) return;
+  Object.assign(crop, { kind, pos: { ...pend[kind + 'Pos'] }, iw: 0, ih: 0 });
+  cropFrame.className = 'crop-frame ' + (kind === 'photo' ? 'round' : 'wide');
+  $('#crop-title').textContent = kind === 'photo' ? 'Adjust photo' : 'Adjust banner';
+  $('#crop-zoom').value = crop.pos.z;
+  const img = new Image();
+  img.onload = () => { crop.iw = img.naturalWidth; crop.ih = img.naturalHeight; };
+  img.src = state.me[kind];
+  drawCrop();
+  $('#crop-dialog').showModal();
+}
+let drag = null;
+cropFrame.addEventListener('pointerdown', e => {
+  if (!crop.iw) return;
+  drag = { x: e.clientX, y: e.clientY }; cropFrame.setPointerCapture(e.pointerId); cropFrame.classList.add('grabbing');
+});
+cropFrame.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag = { x: e.clientX, y: e.clientY };
+  const W = cropFrame.clientWidth, H = cropFrame.clientHeight, z = crop.pos.z;
+  const s = Math.max(W / crop.iw, H / crop.ih);            // how big "cover" draws the image
+  const denX = (z - 1) * W + z * Math.max(0, crop.iw * s - W);   // pixels moved per 100% of focus change
+  const denY = (z - 1) * H + z * Math.max(0, crop.ih * s - H);
+  if (denX > 1) crop.pos.x = clamp(crop.pos.x - 100 * dx / denX, 0, 100);
+  if (denY > 1) crop.pos.y = clamp(crop.pos.y - 100 * dy / denY, 0, 100);
+  drawCrop();
+});
+for (const ev of ['pointerup', 'pointercancel']) cropFrame.addEventListener(ev, () => { drag = null; cropFrame.classList.remove('grabbing'); });
+$('#crop-zoom').oninput = e => { crop.pos.z = Number(e.target.value); drawCrop(); };
+$('#crop-done').onclick = () => { pend[crop.kind + 'Pos'] = { ...crop.pos }; paintMedia(); $('#crop-dialog').close(); };
 
 // Someone else's profile card
 async function showCard(id) {
   if (id === state.me.id) return openSettings();
   let u;
   try { u = (await api('/user?id=' + encodeURIComponent(id))).user; } catch (e) { return toast(e.message); }
-  const cover = h('div', 'cover'); paintCover(cover, u.banner, u.color);
+  const cover = h('div', 'cover'); paintCover(cover, u.banner, u.bannerPos, u);
   const x = h('button', 'icon-btn card-x', '\u00d7'); x.type = 'button'; x.setAttribute('aria-label', 'Close'); x.dataset.close = '';
   cover.append(x);
   const body = h('div', 'card-body'), top = h('div', 'card-top');
   top.append(avatar(u, 'xl', u.online));
-  body.append(top, h('h2', '', u.name), h('p', 'hint', (u.online ? 'Online' : 'Offline') + ' \u00b7 ID ' + u.id));
+  const title = h('div', 'name-row'), nm = h('h2', '', u.name);
+  if (u.admin && u.theme?.name) nm.style.color = u.theme.name;
+  title.append(nm); if (u.admin) title.append(h('span', 'tag', 'ADMIN'));
+  $('#card-dialog').style.borderColor = (u.admin && u.theme?.banner1) || '';
+  body.append(top, title, h('p', 'hint', (u.online ? 'Online' : 'Offline') + ' \u00b7 ID ' + u.id));
   if (u.status) body.append(h('p', 'card-status', u.status));
   if (u.bio) body.append(h('p', 'card-bio', u.bio));
   const facts = h('div', 'facts');

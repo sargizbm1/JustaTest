@@ -135,6 +135,7 @@
       <div class="cover" id="pf-banner">
         <div class="media-actions cover-actions">
           <button class="btn small" type="button" id="banner-change">Change banner</button>
+          <button class="btn small" type="button" id="banner-adjust">Adjust</button>
           <button class="btn small" type="button" id="banner-remove">Remove</button>
         </div>
       </div>
@@ -142,6 +143,7 @@
         <span id="pf-photo"></span>
         <div class="media-actions">
           <button class="btn ghost small" type="button" id="photo-change">Change photo</button>
+          <button class="btn ghost small" type="button" id="photo-adjust">Adjust</button>
           <button class="btn ghost small" type="button" id="photo-remove">Remove photo</button>
         </div>
       </div>
@@ -158,6 +160,11 @@
         <label class="lbl">Age <input class="field" id="pf-age" type="number" min="13" max="120" inputmode="numeric" placeholder="13+"></label>
       </div>
       <div class="lbl">Avatar color <div class="swatches" id="swatches" role="group" aria-label="Avatar color"></div></div>
+      <div class="lbl" id="admin-colors" hidden>
+        <span>Admin colors <span class="tag">ADMIN</span></span>
+        <p class="hint">Only admins can do this. Pick your own colors for your avatar, name, messages and profile. Tap Default to go back to normal.</p>
+        <div id="color-list"></div>
+      </div>
     </section>
 
     <section data-panel="privacy" hidden>
@@ -184,6 +191,23 @@
   </form>
   <input type="file" id="file-photo" accept="image/*" hidden>
   <input type="file" id="file-banner" accept="image/*" hidden>
+</dialog>
+
+<dialog id="crop-dialog">
+  <h2 id="crop-title">Adjust picture</h2>
+  <p class="hint">Drag the picture to choose which part shows. Use the slider to zoom.</p>
+  <div class="crop-frame" id="crop-frame"></div>
+  <label class="lbl">Zoom <input type="range" id="crop-zoom" min="1" max="3" step="0.01" value="1"></label>
+  <div class="inline end">
+    <button class="btn ghost" type="button" data-close>Cancel</button>
+    <button class="btn" type="button" id="crop-done">Done</button>
+  </div>
+</dialog>
+
+<dialog id="banned-dialog">
+  <h2>Account banned</h2>
+  <p class="hint" id="banned-msg"></p>
+  <button class="btn ghost" type="button" id="banned-out">Sign out</button>
 </dialog>
 
 <dialog id="card-dialog" class="card-dlg"><div id="card"></div></dialog>
